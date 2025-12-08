@@ -394,15 +394,22 @@ class MainWindow(QMainWindow):
         self.stop_btn = QPushButton("停止")
         self.stop_btn.clicked.connect(self.stop_process)
         self.stop_btn.setEnabled(False)
+        self.proxy_btn = QPushButton("设置系统代理")
+        self.proxy_btn.clicked.connect(self.toggle_system_proxy)
+        self.proxy_btn.setEnabled(False)  # 只有启动后才能设置
         self.auto_start_check = QCheckBox("开机启动")
         self.auto_start_check.stateChanged.connect(self.on_auto_start_changed)
         control_layout.addWidget(self.start_btn)
         control_layout.addWidget(self.stop_btn)
+        control_layout.addWidget(self.proxy_btn)
         control_layout.addWidget(self.auto_start_check)
         control_layout.addStretch()
         control_layout.addWidget(QPushButton("清空日志", clicked=self.clear_log))
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
+        
+        # 系统代理状态
+        self.system_proxy_enabled = False
         
         # 日志
         log_group = QGroupBox("运行日志")
@@ -601,6 +608,7 @@ class MainWindow(QMainWindow):
         
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.proxy_btn.setEnabled(True)  # 启动后可以设置系统代理
         self.server_edit.setEnabled(False)
         self.listen_edit.setEnabled(False)
         self.server_combo.setEnabled(False)
@@ -615,8 +623,16 @@ class MainWindow(QMainWindow):
     
     def on_process_finished(self):
         """进程结束"""
+        # 停止时自动清理系统代理
+        if self.system_proxy_enabled:
+            self._set_system_proxy(False)
+            self.system_proxy_enabled = False
+            self.proxy_btn.setText("设置系统代理")
+            self.append_log("[系统] 已自动清理系统代理\n")
+        
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.proxy_btn.setEnabled(False)  # 停止后禁用系统代理按钮
         self.server_edit.setEnabled(True)
         self.listen_edit.setEnabled(True)
         self.server_combo.setEnabled(True)
@@ -756,6 +772,144 @@ class MainWindow(QMainWindow):
     def update_auto_start_checkbox(self):
         """更新开机启动复选框状态"""
         self.auto_start_check.setChecked(self._is_auto_start_enabled())
+    
+    def toggle_system_proxy(self):
+        """切换系统代理"""
+        if self.system_proxy_enabled:
+            # 关闭系统代理
+            if self._set_system_proxy(False):
+                self.system_proxy_enabled = False
+                self.proxy_btn.setText("设置系统代理")
+                self.append_log("[系统] 已关闭系统代理\n")
+            else:
+                QMessageBox.warning(self, "错误", "关闭系统代理失败")
+        else:
+            # 开启系统代理
+            if self._set_system_proxy(True):
+                self.system_proxy_enabled = True
+                self.proxy_btn.setText("关闭系统代理")
+                self.append_log("[系统] 已设置系统代理\n")
+            else:
+                QMessageBox.warning(self, "错误", "设置系统代理失败")
+    
+    def _set_system_proxy(self, enabled):
+        """设置系统代理（跨平台）"""
+        try:
+            # 获取当前监听地址
+            listen = self.listen_edit.text()
+            if not listen and enabled:
+                return False
+            
+            if sys.platform == 'win32':
+                return self._set_windows_proxy(enabled, listen)
+            elif sys.platform == 'darwin':
+                return self._set_macos_proxy(enabled, listen)
+            else:
+                self.append_log("[系统] Linux 暂不支持自动设置系统代理\n")
+                return False
+        except Exception as e:
+            self.append_log(f"[系统] 设置系统代理失败: {e}\n")
+            return False
+    
+    def _set_windows_proxy(self, enabled, listen):
+        """设置 Windows 系统代理"""
+        try:
+            import winreg
+            
+            # Internet Settings 注册表路径
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+            
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+            
+            if enabled:
+                # 设置代理服务器地址 (SOCKS5 代理需要使用 socks=地址)
+                # Windows IE/Edge 不直接支持 SOCKS5，这里设置为 HTTP 代理格式
+                # 用户可能需要使用支持 SOCKS5 的浏览器或工具
+                proxy_server = f"socks={listen}"
+                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, proxy_server)
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+                # 设置不使用代理的地址
+                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>")
+            else:
+                # 关闭代理
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+            
+            winreg.CloseKey(key)
+            
+            # 通知系统代理设置已更改
+            try:
+                from ctypes import windll
+                INTERNET_OPTION_SETTINGS_CHANGED = 39
+                INTERNET_OPTION_REFRESH = 37
+                windll.wininet.InternetSetOptionW(0, INTERNET_OPTION_SETTINGS_CHANGED, 0, 0)
+                windll.wininet.InternetSetOptionW(0, INTERNET_OPTION_REFRESH, 0, 0)
+            except:
+                pass
+            
+            return True
+        except Exception as e:
+            self.append_log(f"[系统] Windows 代理设置失败: {e}\n")
+            return False
+    
+    def _set_macos_proxy(self, enabled, listen):
+        """设置 macOS 系统代理"""
+        try:
+            # 解析监听地址
+            if ':' in listen:
+                host, port = listen.rsplit(':', 1)
+            else:
+                host, port = '127.0.0.1', listen
+            
+            # 获取当前网络服务名称
+            result = subprocess.run(
+                ['networksetup', '-listallnetworkservices'],
+                capture_output=True, text=True
+            )
+            
+            # 解析网络服务列表（跳过第一行说明）
+            services = [line.strip() for line in result.stdout.strip().split('\n')[1:] 
+                       if line.strip() and not line.startswith('*')]
+            
+            for service in services:
+                try:
+                    if enabled:
+                        # 设置 SOCKS 代理
+                        subprocess.run(
+                            ['networksetup', '-setsocksfirewallproxy', service, host, port],
+                            capture_output=True, check=True
+                        )
+                        subprocess.run(
+                            ['networksetup', '-setsocksfirewallproxystate', service, 'on'],
+                            capture_output=True, check=True
+                        )
+                    else:
+                        # 关闭 SOCKS 代理
+                        subprocess.run(
+                            ['networksetup', '-setsocksfirewallproxystate', service, 'off'],
+                            capture_output=True, check=True
+                        )
+                except subprocess.CalledProcessError:
+                    # 某些网络服务可能不支持代理设置，忽略错误
+                    pass
+            
+            return True
+        except Exception as e:
+            self.append_log(f"[系统] macOS 代理设置失败: {e}\n")
+            return False
+    
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        # 关闭前清理系统代理
+        if self.system_proxy_enabled:
+            self._set_system_proxy(False)
+            self.append_log("[系统] 程序关闭，已清理系统代理\n")
+        
+        # 停止进程
+        if self.process_thread and self.process_thread.is_running:
+            self.process_thread.stop()
+            self.process_thread.wait()
+        
+        event.accept()
     
     def auto_start(self):
         """自动启动"""
