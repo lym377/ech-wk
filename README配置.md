@@ -1,3 +1,7 @@
+视频教程：https://www.youtube.com/watch?v=sQq6IZnLGq4
+
+github：https://github.com/byJoey/ech-wk
+
 ECH域名：cloudflare-ech.com
 
 DOH服务器：
