@@ -24,18 +24,76 @@ jobs:
             exe_ext: .exe
             archive_format: zip
             archive_ext: .zip
+            target: desktop
+            artifact_suffix: ""
+            enable_gui: true
+            cgo_enabled: "0"
+
           - os: macos-15-intel
             goos: darwin
             goarch: amd64
-            exe_ext: ''
+            exe_ext: ""
             archive_format: zip
             archive_ext: .zip
+            target: desktop
+            artifact_suffix: ""
+            enable_gui: true
+            cgo_enabled: "0"
+
           - os: macos-14
             goos: darwin
             goarch: arm64
-            exe_ext: ''
+            exe_ext: ""
             archive_format: zip
             archive_ext: .zip
+            target: desktop
+            artifact_suffix: ""
+            enable_gui: true
+            cgo_enabled: "0"
+
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            exe_ext: ""
+            archive_format: tar.gz
+            archive_ext: .tar.gz
+            target: desktop
+            artifact_suffix: ""
+            enable_gui: true
+            cgo_enabled: "0"
+
+          - os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            exe_ext: ""
+            archive_format: tar.gz
+            archive_ext: .tar.gz
+            target: desktop
+            artifact_suffix: ""
+            enable_gui: true
+            cgo_enabled: "0"
+
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            exe_ext: ""
+            archive_format: tar.gz
+            archive_ext: .tar.gz
+            target: softrouter
+            artifact_suffix: "-softrouter"
+            enable_gui: false
+            cgo_enabled: "0"
+
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            exe_ext: ""
+            archive_format: tar.gz
+            archive_ext: .tar.gz
+            target: softrouter
+            artifact_suffix: "-softrouter"
+            enable_gui: false
+            cgo_enabled: "0"
 
     runs-on: ${{ matrix.os }}
     
@@ -55,28 +113,126 @@ jobs:
           go mod tidy
 
       - name: Build Go executable
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo_enabled }}
         run: |
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o ech-workers${{ matrix.exe_ext }} ech-workers.go
+          echo "Building for $GOOS/$GOARCH (target=${{ matrix.target }}, CGO_ENABLED=$CGO_ENABLED)"
+          go build -trimpath -ldflags="-s -w" -o ech-workers${{ matrix.exe_ext }} ech-workers.go
         shell: bash
 
+      # 下面这些步骤：只有打 tag 且 enable_gui == true 时才会执行，用来打包 GUI
+
       - name: Set up Python
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && matrix.enable_gui == true
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install PyInstaller and dependencies
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Install system dependencies (Linux)
+        if: startsWith(github.ref, 'refs/tags/') && matrix.goos == 'linux' && matrix.enable_gui == true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pyqt5 python3-pyqt5.qtsvg python3-dev
+        shell: bash
+
+      - name: Install PyInstaller, PySocks, and other dependencies
+        if: startsWith(github.ref, 'refs/tags/') && matrix.enable_gui == true
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PyQt5 pystray Pillow
+          if [ "${{ matrix.goos }}" == "linux" ]; then
+            # Linux: 使用系统包中的 PyQt5，只安装其他依赖
+            pip install pyinstaller pystray Pillow PySocks
+            python -c "import PyQt5.QtWidgets; print('PyQt5 available')" || echo "PyQt5 not available, will skip GUI build"
+          else
+            # Windows / macOS: 从 PyPI 安装
+            pip install pyinstaller PyQt5 pystray Pillow PySocks
+          fi
+        shell: bash
+
+      - name: Check application icon
+        if: startsWith(github.ref, 'refs/tags/') && matrix.enable_gui == true
+        run: |
+          # 检查图标文件是否存在（图标文件已包含在仓库中）
+          echo "Checking for icon files..."
+          ls -lh app_icon.* 2>/dev/null || echo "No icon files found"
+          if [ "${{ matrix.goos }}" == "windows" ]; then
+            if [ -f "app_icon.ico" ]; then
+              echo "✓ Found app_icon.ico"
+            elif [ -f "app_icon.png" ]; then
+              echo "✓ Found app_icon.png (will be used as icon)"
+            else
+              echo "⚠ No icon file found, PyInstaller will use default icon"
+            fi
+          elif [ "${{ matrix.goos }}" == "darwin" ]; then
+            if [ -f "app_icon.icns" ]; then
+              echo "✓ Found app_icon.icns"
+            elif [ -f "app_icon.png" ]; then
+              echo "✓ Found app_icon.png (will be used as icon)"
+            else
+              echo "⚠ No icon file found, PyInstaller will use default icon"
+            fi
+          else
+            if [ -f "app_icon.png" ]; then
+              echo "✓ Found app_icon.png"
+            else
+              echo "⚠ No icon file found, PyInstaller will use default icon"
+            fi
+          fi
+        shell: bash
 
       - name: Build Python executable
+        if: startsWith(github.ref, 'refs/tags/') && matrix.enable_gui == true
+        run: |
+          # 构建 PyInstaller 命令，根据平台添加图标
+          ICON_ARG=""
+          if [ "${{ matrix.goos }}" == "windows" ]; then
+            if [ -f "app_icon.ico" ]; then
+              ICON_ARG="--icon=app_icon.ico"
+            elif [ -f "app_icon.png" ]; then
+              ICON_ARG="--icon=app_icon.png"
+            fi
+            pyinstaller --onefile --windowed --name ECHWorkersGUI --hidden-import=PyQt5 $ICON_ARG gui.py
+          elif [ "${{ matrix.goos }}" == "linux" ]; then
+            if python -c "import PyQt5.QtWidgets" 2>/dev/null; then
+              if [ -f "app_icon.png" ]; then
+                ICON_ARG="--icon=app_icon.png"
+              fi
+              pyinstaller --onefile --name ECHWorkersGUI --hidden-import=PyQt5 $ICON_ARG gui.py
+            else
+              echo "PyQt5 not available, skipping GUI build for Linux"
+              echo "Only Go executable will be included"
+            fi
+          else
+            # macOS
+            if [ -f "app_icon.icns" ]; then
+              ICON_ARG="--icon=app_icon.icns"
+            elif [ -f "app_icon.png" ]; then
+              ICON_ARG="--icon=app_icon.png"
+            fi
+            pyinstaller --onefile --name ECHWorkersGUI --hidden-import=PyQt5 $ICON_ARG gui.py
+          fi
+        shell: bash
+
+      - name: Download China IP list
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          # PyInstaller 会自动使用当前系统架构
-          # macos-13 = Intel (x86_64), macos-14 = Apple Silicon (arm64)
-          pyinstaller --onefile --windowed --name ECHWorkersGUI gui.py
+          echo "Downloading latest China IP list (IPv4 and IPv6)..."
+          curl -L -o chn_ip.txt "https://raw.githubusercontent.com/mayaxcn/china-ip-list/refs/heads/master/chn_ip.txt" || echo "Failed to download IPv4 list, will skip"
+          curl -L -o chn_ip_v6.txt "https://raw.githubusercontent.com/mayaxcn/china-ip-list/refs/heads/master/chn_ip_v6.txt" || echo "Failed to download IPv6 list, will skip"
+          if [ -f "chn_ip.txt" ]; then
+            echo "✓ China IPv4 IP list downloaded successfully"
+            wc -l chn_ip.txt
+          else
+            echo "⚠ China IPv4 IP list download failed, release will continue without it"
+          fi
+          if [ -f "chn_ip_v6.txt" ]; then
+            echo "✓ China IPv6 IP list downloaded successfully"
+            wc -l chn_ip_v6.txt
+          else
+            echo "⚠ China IPv6 IP list download failed, release will continue without it"
+          fi
         shell: bash
 
       - name: Prepare release files
@@ -84,46 +240,89 @@ jobs:
         run: |
           mkdir -p release
           
-          # 复制 Go 可执行文件
+          # Go 可执行文件
           cp ech-workers${{ matrix.exe_ext }} release/
           
-          # 复制 Python 打包后的可执行文件
-          if [ "${{ matrix.goos }}" == "windows" ]; then
-            if [ -f "dist/ECHWorkersGUI.exe" ]; then
-              cp dist/ECHWorkersGUI.exe release/
-            fi
-          else
-            if [ -f "dist/ECHWorkersGUI" ]; then
-              cp dist/ECHWorkersGUI release/
-              chmod +x release/ECHWorkersGUI
+          # 中国IP列表文件（离线版本）
+          if [ -f "chn_ip.txt" ]; then
+            cp chn_ip.txt release/
+            echo "✓ China IPv4 IP list included in release"
+          fi
+          if [ -f "chn_ip_v6.txt" ]; then
+            cp chn_ip_v6.txt release/
+            echo "✓ China IPv6 IP list included in release"
+          fi
+          
+          # GUI（仅桌面版）
+          if [ "${{ matrix.enable_gui }}" = "true" ]; then
+            if [ "${{ matrix.goos }}" == "windows" ]; then
+              if [ -f "dist/ECHWorkersGUI.exe" ]; then
+                cp dist/ECHWorkersGUI.exe release/
+              fi
+            else
+              if [ -f "dist/ECHWorkersGUI" ]; then
+                cp dist/ECHWorkersGUI release/
+                chmod +x release/ECHWorkersGUI
+              elif [ "${{ matrix.goos }}" == "linux" ]; then
+                echo "GUI executable not built, only Go executable will be included"
+              fi
             fi
           fi
           
-          # 创建 README
+          # README
           {
             echo "ECH Workers Client"
             echo ""
+            echo "Target: ${{ matrix.target }}"
+            echo ""
             echo "Files:"
-            echo "- ech-workers(.exe): Go compiled core proxy program"
-            if [ "${{ matrix.goos }}" == "windows" ]; then
-              echo "- ECHWorkersGUI.exe: Python GUI client (standalone executable)"
+            echo "- ech-workers${{ matrix.exe_ext }}: Go compiled core proxy program"
+            if [ -f "release/chn_ip.txt" ]; then
+              echo "- chn_ip.txt: China IPv4 IP list (offline version)"
+            fi
+            if [ -f "release/chn_ip_v6.txt" ]; then
+              echo "- chn_ip_v6.txt: China IPv6 IP list (offline version)"
+            fi
+            if [ "${{ matrix.enable_gui }}" = "true" ]; then
+              if [ "${{ matrix.goos }}" == "windows" ]; then
+                echo "- ECHWorkersGUI.exe: Python GUI client (standalone executable)"
+              elif [ -f "release/ECHWorkersGUI" ]; then
+                echo "- ECHWorkersGUI: Python GUI client (standalone executable)"
+              else
+                echo "- Note: GUI client not available for this architecture"
+                echo "  Use ech-workers from command line instead"
+              fi
             else
-              echo "- ECHWorkersGUI: Python GUI client (standalone executable)"
+              echo "- GUI client not included for this build (CLI only, suitable for routers / servers)"
             fi
             echo ""
             echo "Usage:"
             if [ "${{ matrix.goos }}" == "windows" ]; then
-              echo "1. Double-click ECHWorkersGUI.exe to launch the GUI"
+              echo "1. Double-click ECHWorkersGUI.exe to launch the GUI (if present)"
               echo "2. Or run ech-workers.exe from command line"
             else
-              echo "1. Run ./ECHWorkersGUI to launch the GUI"
-              echo "2. Or run ./ech-workers from command line"
+              echo "1. Run ./ech-workers from command line"
+              if [ "${{ matrix.enable_gui }}" = "true" ]; then
+                echo "2. Or run ./ECHWorkersGUI to launch the GUI"
+              fi
             fi
             echo ""
             echo "System Requirements:"
-            echo "- Windows: Windows 10+"
-            echo "- macOS: macOS 10.13+"
-            echo "- No Python installation required (standalone executables)"
+            if [ "${{ matrix.target }}" = "softrouter" ]; then
+              echo "- Linux soft router / NAS (OpenWrt / iStoreOS / x86_64 or ARM64)"
+              echo "- Architecture: ${{ matrix.goarch }}"
+              echo "- Recommended: run from SSH / shell"
+            else
+              if [ "${{ matrix.goos }}" == "windows" ]; then
+                echo "- Windows: Windows 10+"
+              elif [ "${{ matrix.goos }}" == "darwin" ]; then
+                echo "- macOS: macOS 10.13+"
+              else
+                echo "- Linux: Ubuntu 18.04+ / Debian 10+ / CentOS 7+"
+                echo "- Architecture: ${{ matrix.goarch }}"
+              fi
+            fi
+            echo "- No Python installation required for running the binaries"
           } > release/README.txt
         shell: bash
 
@@ -131,22 +330,30 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') && matrix.goos == 'windows'
         run: |
           cd release
-          powershell Compress-Archive -Path * -DestinationPath ../ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.archive_ext }} -Force
+          powershell Compress-Archive -Path * -DestinationPath ../ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.artifact_suffix }}${{ matrix.archive_ext }} -Force
         shell: powershell
 
-      - name: Create archive (macOS/Linux)
-        if: startsWith(github.ref, 'refs/tags/') && matrix.goos != 'windows'
+      - name: Create archive (macOS)
+        if: startsWith(github.ref, 'refs/tags/') && matrix.goos == 'darwin'
         run: |
           cd release
-          zip -r ../ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.archive_ext }} .
+          zip -r ../ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.artifact_suffix }}${{ matrix.archive_ext }} .
+        shell: bash
+
+      - name: Create archive (Linux)
+        if: startsWith(github.ref, 'refs/tags/') && matrix.goos == 'linux'
+        run: |
+          cd release
+          tar -czf ../ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.artifact_suffix }}${{ matrix.archive_ext }} .
         shell: bash
 
       - name: Upload artifacts
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
-          name: ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.archive_ext }}
+          name: ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.artifact_suffix }}
+          path: ECHWorkers-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.artifact_suffix }}${{ matrix.archive_ext }}
+          retention-days: 30
 
   release:
     needs: build
@@ -164,6 +371,7 @@ jobs:
         with:
           files: |
             artifacts/**/*.zip
+            artifacts/**/*.tar.gz
           draft: false
           prerelease: false
         env:
