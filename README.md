@@ -101,7 +101,8 @@
 #### 软路由版本（仅命令行）
 - **Linux x86_64**: `ECHWorkers-linux-amd64-softrouter.tar.gz`
 - **Linux ARM64**: `ECHWorkers-linux-arm64-softrouter.tar.gz`
-
+#### Docker版本（仅测试x86）
+- **DockerHub仓库**：https://hub.docker.com/r/cirnosalt/ech-workers-docker
 #### 安装步骤
 
 1. **解压文件**
@@ -475,7 +476,36 @@ chmod +x /etc/init.d/ech-workers.sh
 ```bash
 /etc/init.d/ech-workers.sh
 ```
+### Docker部署
+   
+参数说明：
 
+```
+--network host #网络类型一般推荐直接host 
+  -e ARG_F="" #填写你的workers域名和端口 
+  -e ARG_ECH="cloudflare-ech.com" #ech查询域名，一般保持默认 
+  -e ARG_TOKEN="" #你设置的token
+  -e ARG_IP="visa.com" #优选IP或域名
+  -e ARG_L="0.0.0.0:30000" #Socks5服务器的IP和端口，0.0.0.0为全局监听
+  -e ARG_ROUTING="global" #分流模式，global=全局代理 bypass_cn=绕过大陆
+```
+
+docker运行命令模板，按照上面的说明填写，然后复制到终端运行：
+
+```
+docker run -d \
+  --name cfech \
+  --restart always \
+  --network host \
+  -e ARG_F="" \
+  -e ARG_ECH="cloudflare-ech.com" \
+  -e ARG_TOKEN="" \
+  -e ARG_IP="visa.com" \
+  -e ARG_L="0.0.0.0:30000" \
+  -e ARG_ROUTING="global" \
+  cirnosalt/ech-workers-docker:latest
+```
+   
 ### 软路由配置建议
 
 #### 网络配置

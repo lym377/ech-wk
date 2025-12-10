@@ -25,15 +25,29 @@ if sys.platform == 'win32':
     except:
         pass
     
-    # 高 DPI 支持
+    # 高 DPI 支持 - 必须在导入 PyQt5 之前设置
+    # 使用 PROCESS_PER_MONITOR_DPI_AWARE_V2 (Windows 10 1703+)
+    # 这支持每个监视器 DPI 感知，并启用子窗口 DPI 缩放
     try:
-        from ctypes import windll
-        windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
-    except:
+        from ctypes import windll, ctypes
+        # 尝试使用最新的 DPI 感知 API (Windows 10 1703+)
         try:
-            windll.user32.SetProcessDPIAware()
-        except:
-            pass
+            # PROCESS_PER_MONITOR_DPI_AWARE_V2 = 2
+            # 这个值支持每个监视器 DPI 感知和子窗口 DPI 缩放
+            windll.shcore.SetProcessDpiAwareness(2)
+        except (AttributeError, OSError):
+            # 如果 shcore 不可用，尝试旧版 API
+            try:
+                # PROCESS_PER_MONITOR_DPI_AWARE = 2 (旧版)
+                windll.shcore.SetProcessDpiAwareness(2)
+            except:
+                # 如果都失败，使用最基础的 DPI 感知
+                try:
+                    windll.user32.SetProcessDPIAware()
+                except:
+                    pass
+    except:
+        pass
 
 # 检查 PyQt5
 try:
@@ -54,10 +68,23 @@ try:
         pass
     
     # 高 DPI 支持 - 必须在创建 QApplication 之前设置
+    # PyQt5 5.6+ 支持高 DPI 缩放
     if hasattr(Qt, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
+    # 设置环境变量以优化高 DPI 显示（Windows）
+    if sys.platform == 'win32':
+        try:
+            # 启用高 DPI 缩放
+            os.environ['QT_ENABLE_HIGHDPI_SCALING'] = '1'
+            # 设置缩放因子舍入策略（避免模糊）
+            os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = 'Round'
+            # 禁用自动缩放因子（让系统处理）
+            # os.environ['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+        except:
+            pass
 except ImportError:
     HAS_PYQT = False
     print("错误: 未安装 PyQt5")
@@ -373,9 +400,61 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         """初始化界面"""
         self.setWindowTitle(APP_TITLE)
-        self.setGeometry(100, 100, 950, 800)
         
-        # 设置窗口图标
+        # Windows DPI 适配：根据系统 DPI 调整窗口大小
+        # PyQt5 的 AA_EnableHighDpiScaling 会自动处理缩放
+        # 我们设置逻辑像素大小，系统会自动转换为物理像素
+        base_width = 950
+        base_height = 800
+        
+        # 获取可用屏幕区域（排除任务栏）
+        try:
+            # 方法1: 使用 QApplication.desktop() (PyQt5 推荐方式)
+            try:
+                desktop = QApplication.desktop()
+                available_geometry = desktop.availableGeometry()
+                screen_width = available_geometry.width()
+                screen_height = available_geometry.height()
+                screen_x = available_geometry.x()
+                screen_y = available_geometry.y()
+            except:
+                # 方法2: 使用 QScreen (如果 desktop() 不可用)
+                try:
+                    screen = QApplication.primaryScreen()
+                    available_geometry = screen.availableGeometry()
+                    screen_width = available_geometry.width()
+                    screen_height = available_geometry.height()
+                    screen_x = available_geometry.x()
+                    screen_y = available_geometry.y()
+                except:
+                    # 如果都失败，使用默认值
+                    screen_width = 1920
+                    screen_height = 1080
+                    screen_x = 0
+                    screen_y = 0
+            
+            # 确保窗口大小不超过可用区域
+            if base_width > screen_width:
+                base_width = screen_width - 40  # 留出边距
+            if base_height > screen_height:
+                base_height = screen_height - 40  # 留出边距，确保不遮挡任务栏
+            
+            # 计算居中位置
+            x = screen_x + (screen_width - base_width) // 2
+            y = screen_y + (screen_height - base_height) // 2
+            
+            # 确保窗口不会超出屏幕边界
+            if x < screen_x:
+                x = screen_x + 20
+            if y < screen_y:
+                y = screen_y + 20
+            
+            self.setGeometry(x, y, base_width, base_height)
+        except:
+            # 如果获取屏幕信息失败，使用默认位置
+            self.setGeometry(100, 100, base_width, base_height)
+        
+        # 设置窗口图标（黑客帝国风格）
         self.setWindowIcon(self._create_matrix_icon())
         
         # 应用现代化样式
@@ -511,7 +590,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(log_group)
     
     def _create_matrix_icon(self):
-        """创建图标"""
+        """创建黑客帝国风格图标"""
         # 创建不同尺寸的图标
         sizes = [16, 32, 48, 64, 128, 256]
         icon = QIcon()
@@ -567,7 +646,7 @@ class MainWindow(QMainWindow):
         return icon
     
     def _get_modern_style(self):
-        """获取样式表"""
+        """获取黑客帝国风格样式表"""
         return """
         /* 主窗口样式 - 深色背景 */
         QMainWindow {
@@ -851,7 +930,7 @@ class MainWindow(QMainWindow):
         # 创建系统托盘图标
         self.tray_icon = QSystemTrayIcon(self)
         
-        # 使用图标
+        # 使用黑客帝国风格图标
         try:
             icon = self._create_matrix_icon()
             self.tray_icon.setIcon(icon)
@@ -1193,6 +1272,7 @@ class MainWindow(QMainWindow):
         server['ip'] = self.ip_edit.text()
         server['dns'] = self.dns_edit.text()
         server['ech'] = self.ech_edit.text()
+        
         # 保存分流模式
         routing_mode = self.routing_combo.currentData()
         if routing_mode:
@@ -1200,6 +1280,7 @@ class MainWindow(QMainWindow):
         else:
             # 如果没有选择，使用默认值
             server['routing_mode'] = server.get('routing_mode', 'bypass_cn')
+        
         return server
     
     def on_server_changed(self):
